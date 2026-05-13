@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExamGuard - Select Mode</title>
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            padding: 40px;
+        }
+
+        .header-section {
+            text-align: center;
+            margin-bottom: 60px;
+        }
+
+        .mode-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 32px;
+            max-width: 800px;
+            width: 100%;
+        }
+
+        .mode-card {
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            cursor: pointer;
+            border: 2px solid white;
+            box-shadow: var(--shadow-lg);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .mode-card:hover {
+            transform: translateY(-8px);
+            border-color: var(--accent);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+
+        .icon-circle {
+            width: 80px;
+            height: 80px;
+            background: var(--bg-body);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+            font-size: 32px;
+            color: var(--text-main);
+            transition: 0.3s;
+        }
+
+        .mode-card:hover .icon-circle {
+            background: #eff6ff;
+            color: var(--accent);
+            transform: scale(1.1);
+        }
+
+        .live-mode .icon-circle {
+            color: var(--success);
+        }
+
+        .live-mode:hover .icon-circle {
+            background: #dcfce7;
+        }
+
+        .rec-mode .icon-circle {
+            color: var(--warning);
+        }
+
+        .rec-mode:hover .icon-circle {
+            background: #fef3c7;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header-section fade-in">
+        <h1 style="font-size: 32px; margin-bottom: 12px; color: var(--primary);">Select Monitoring Mode</h1>
+        <p class="text-muted">Choose the appropriate surveillance method for this session</p>
+    </div>
+
+    <div class="mode-grid">
+        <!-- Live Mode -->
+        <div class="mode-card live-mode slide-in" onclick="window.location.href='/select_camera'">
+            <div class="icon-circle">
+                <i class='bx bxs-cctv'></i>
+            </div>
+            <h2 style="font-size: 20px; margin-bottom: 12px;">Live Proctoring</h2>
+            <p class="text-muted text-sm" style="line-height: 1.6; margin-bottom: 24px;">
+                Connect to classroom cameras for real-time AI behavior analysis and instant alerts.
+            </p>
+            <span class="badge badge-success">
+                <i class='bx bx-broadcast' style="margin-right: 6px;"></i> Live Stream
+            </span>
+        </div>
+
+        <!-- Recorded Mode -->
+        <div class="mode-card rec-mode slide-in" style="animation-delay: 0.1s;"
+            onclick="window.location.href='/mode/recorded'">
+            <div class="icon-circle">
+                <i class='bx bxs-videos'></i>
+            </div>
+            <h2 style="font-size: 20px; margin-bottom: 12px;">Post-Exam Analysis</h2>
+            <p class="text-muted text-sm" style="line-height: 1.6; margin-bottom: 24px;">
+                Upload recorded exam footage or images to generate detailed violation reports.
+            </p>
+            <span class="badge badge-warning">
+                <i class='bx bx-upload' style="margin-right: 6px;"></i> File Upload
+            </span>
+        </div>
+    </div>
+
+    <div style="margin-top: 60px;">
+        <a href="/logout" class="btn btn-outline">
+            <i class='bx bx-arrow-back'></i> Return to Login
+        </a>
+    </div>
+</body>
+
+</html>

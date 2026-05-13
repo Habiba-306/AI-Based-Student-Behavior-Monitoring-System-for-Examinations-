@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExamGuard - Select Room</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #6366f1;
+            --primary-dark: #4f46e5;
+            --bg: #0f172a;
+            --card-bg: #1e293b;
+            --text: #f8fafc;
+            --text-dim: #94a3b8;
+            --accent: #22d3ee;
+            --danger: #ef4444;
+            --success: #10b981;
+        }
+
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            padding: 2rem;
+            text-align: center;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(to right, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p.subtitle {
+            color: var(--text-dim);
+            margin-bottom: 3rem;
+        }
+
+        .camera-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 2rem;
+            margin-top: 1rem;
+        }
+
+        .camera-card {
+            background: var(--card-bg);
+            border-radius: 1.5rem;
+            padding: 2rem;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .camera-card:hover {
+            transform: translateY(-10px);
+            border-color: var(--primary);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 10px 10px -5px rgba(0, 0, 0, 0.4);
+        }
+
+        .camera-icon {
+            width: 80px;
+            height: 80px;
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 1.5rem;
+            font-size: 2.5rem;
+            color: var(--primary);
+            transition: all 0.3s;
+        }
+
+        .camera-card:hover .camera-icon {
+            background: var(--primary);
+            color: white;
+            transform: scale(1.1);
+        }
+
+        .room-name {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+        }
+
+        .room-status {
+            font-size: 0.9rem;
+            color: var(--success);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .pulse {
+            width: 8px;
+            height: 8px;
+            background-color: var(--success);
+            border-radius: 50%;
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            }
+
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+            }
+
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+            }
+        }
+
+        .btn-connect {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.75rem;
+            font-weight: 600;
+            width: 100%;
+            transition: all 0.2s;
+        }
+
+        .camera-card:hover .btn-connect {
+            background: var(--primary-dark);
+        }
+
+        .no-cameras {
+            grid-column: 1 / -1;
+            padding: 4rem;
+            background: rgba(239, 68, 68, 0.05);
+            border: 1px dashed var(--danger);
+            border-radius: 1.5rem;
+            color: var(--danger);
+        }
+
+        .loader {
+            width: 48px;
+            height: 48px;
+            border: 5px solid #FFF;
+            border-bottom-color: var(--primary);
+            border-radius: 50%;
+            display: inline-block;
+            box-sizing: border-box;
+            animation: rotation 1s linear infinite;
+        }
+
+        @keyframes rotation {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>Multi-Room Proctoring</h1>
+        <p class="subtitle">Assign a camera to begin AI-powered invigilation</p>
+
+        <div class="camera-grid">
+            {% for cam in cameras %}
+            <div class="camera-card" onclick="setCamera('{{ cam.id }}')">
+                <div class="camera-icon">
+                    <i class="fas fa-video"></i>
+                </div>
+                <div class="room-name">{{ cam.name }}</div>
+                <div class="room-status">
+                    <div class="pulse"></div>
+                    Active & Ready
+                </div>
+                <button class="btn-connect">Connect to Room</button>
+            </div>
+            {% else %}
+            <div class="no-cameras">
+                <i class="fas fa-exclamation-triangle fa-3x" style="margin-bottom: 1rem;"></i>
+                <h2>No Cameras Detected</h2>
+                <p>Please connect your USB cameras and refresh the page.</p>
+                <button onclick="window.location.reload()" class="btn-connect" style="margin-top: 1rem; width: auto;">
+                    <i class="fas fa-sync-alt"></i> Scan Again
+                </button>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <script>
+        function setCamera(id) {
+            fetch(`/set_camera/${id}`, { method: 'POST' })
+                .then(response => {
+                    if (response.ok) {
+                        window.location.href = "{{ url_for('set_mode', m='live') }}";
+                    } else {
+                        alert("Failed to connect to camera");
+                    }
+                });
+        }
+    </script>
+</body>
+
+</html>

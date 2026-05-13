@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExamGuard - Secure Login</title>
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: var(--bg-body);
+        }
+
+        .login-card {
+            background: white;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: var(--shadow-lg);
+            width: 100%;
+            max-width: 400px;
+            border: 1px solid var(--border);
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .logo-icon {
+            font-size: 48px;
+            color: var(--accent-dark);
+            margin-bottom: 16px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            font-size: 14px;
+            color: var(--text-main);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="login-card fade-in">
+        <div class="login-header">
+            <i class='bx bxs-shield-plus logo-icon'></i>
+            <h1 style="font-size: 24px; color: var(--primary);">ExamGuard</h1>
+            <p class="text-muted text-sm">AI-Powered Monitoring System</p>
+        </div>
+
+        <form action="/login" method="POST">
+            {% if error %}
+            <div
+                style="background: #fee2e2; color: #b91c1c; padding: 10px; border-radius: 6px; font-size: 13px; margin-bottom: 20px; display: flex; align-items: center; gap: 8px;">
+                <i class='bx bxs-error-circle'></i> {{ error }}
+            </div>
+            {% endif %}
+
+            <div class="form-group">
+                <label class="form-label">Username</label>
+                <div style="position: relative;">
+                    <i class='bx bx-user' style="position: absolute; left: 12px; top: 12px; color: #94a3b8;"></i>
+                    <input type="text" name="username" placeholder="Enter ID" required style="padding-left: 36px;">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Password</label>
+                <div style="position: relative;">
+                    <i class='bx bx-lock-alt' style="position: absolute; left: 12px; top: 12px; color: #94a3b8;"></i>
+                    <input type="password" name="password" placeholder="••••••••" required style="padding-left: 36px;">
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary" style="width: 100%; padding: 12px;">
+                Sign In
+            </button>
+        </form>
+
+        <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--border); text-align: center;">
+            <span class="badge badge-info" style="font-weight: 500;">
+                <i class='bx bx-check-shield'></i> Secure Environment
+            </span>
+        </div>
+    </div>
+</body>
+
+</html>

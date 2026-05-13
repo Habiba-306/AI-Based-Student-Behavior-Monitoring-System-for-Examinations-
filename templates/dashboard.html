@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ExamGuard | Professional Monitoring</title>
+
+    <!-- CSS & Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href='https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css' rel='stylesheet'>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <style>
+        /* Specific override for video feed card to ensure responsiveness */
+        .video-container {
+            width: 100%;
+            height: 0;
+            padding-bottom: 56.25%;
+            /* 16:9 Aspect Ratio */
+            max-height: 450px;
+            /* Force max height to reduce size */
+            background: #000;
+            position: relative;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .video-stream {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            /* Reverted to CONTAIN: Adds black bars but keeps perfect proportions */
+        }
+
+        .overlay-msg {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.7);
+            text-align: center;
+        }
+        /* Responsive two-column layout */
+        @media (min-width: 1200px) {
+            .col-left  { grid-column: span 1; }
+            .col-right { grid-column: span 1; }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Sidebar Navigation -->
+    <aside class="sidebar">
+        <div class="brand">
+            <i class='bx bxs-shield-plus brand-logo'></i>
+            <span class="brand-text">ExamGuard</span>
+        </div>
+
+        <nav class="nav-menu">
+            <a href="#" class="nav-item active">
+                <i class='bx bxs-dashboard nav-icon'></i>
+                <span class="nav-text">Dashboard</span>
+            </a>
+            <a href="/selection" class="nav-item">
+                <i class='bx bx-refresh nav-icon'></i>
+                <span class="nav-text">Switch Mode</span>
+            </a>
+            <a href="/select_camera" class="nav-item">
+                <i class='bx bx-camera nav-icon'></i>
+                <span class="nav-text">Switch Room</span>
+            </a>
+            <a href="/generate_report" class="nav-item">
+                <i class='bx bxs-file-pdf nav-icon'></i>
+                <span class="nav-text">Export Reports</span>
+            </a>
+            <!-- Spacer -->
+            <div style="flex:1"></div>
+
+            <a href="/logout" class="nav-item">
+                <i class='bx bx-log-out nav-icon'></i>
+                <span class="nav-text">Sign Out</span>
+            </a>
+        </nav>
+
+        <div class="user-profile">
+            <div
+                style="width: 32px; height: 32px; background: #3b82f6; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold;">
+                {{ session.get('user', 'U')[0].upper() }}
+            </div>
+            <div style="display: flex; flex-direction: column;">
+                <span style="font-size: 14px; font-weight: 600;">{{ session.get('user', 'User').title() }}</span>
+                <span style="font-size: 11px; color: #94a3b8;">{{ session.get('role', 'Viewer').title() }}</span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <div class="main-wrapper">
+
+        <!-- Header -->
+        <header class="flex-between" style="margin-bottom: 30px;">
+            <div>
+                <h1 style="font-size: 24px;">{{ mode.title() }} Monitoring</h1>
+                <p class="text-muted text-sm">Session ID: {{ current_session_id or 'No Active Session' }}</p>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <span class="badge badge-info">
+                    <i class='bx bx-server' style="margin-right: 5px;"></i> System Active
+                </span>
+                <span id="connection-status" class="badge badge-success">
+                    <span class="status-dot active" style="margin-right: 6px;"></span> Signal Stable
+                </span>
+            </div>
+        </header>
+
+        <div class="app-container" style="display: grid; grid-template-columns: 3fr 1fr; gap: 24px;">
+
+            <!-- Left Column: Video Feed -->
+            <div class="col-left" style="grid-column: 1 / -1;">
+                <div class="card">
+                    <div class="card-header">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <i class='bx bxs-cctv text-muted' style="font-size: 20px;"></i>
+                            <span class="card-title">Live Surveillance Feed</span>
+                        </div>
+                        <span class="badge badge-warning">AI Detection ON</span>
+                    </div>
+
+                    <div class="card-body" style="padding: 0;">
+                        <div class="video-container">
+                            {% if mode == 'live' %}
+                            {% if session_active %}
+                            <img id="video-stream" class="video-stream" src="{{ url_for('video_feed') }}"
+                                onerror="this.style.display='none'; document.getElementById('wait-msg').style.display='block';">
+
+                            <div id="wait-msg" class="overlay-msg" style="display:none;">
+                                <i class='bx bx-camera-off' style="font-size: 48px; margin-bottom: 15px;"></i>
+                                <h3>Feed Disconnected</h3>
+                                <p>Waiting for input source...</p>
+                            </div>
+                            {% else %}
+                            <!-- Session Not Started Placeholder -->
+                            <div id="session-placeholder"
+                                style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px;">
+                                <i class='bx bx-video-off'
+                                    style="font-size: 56px; margin-bottom: 15px; opacity: 0.9;"></i>
+                                <h2 style="font-weight: 600; margin: 0 0 8px 0; font-size: 24px;">Session Ready</h2>
+                                <p style="font-size: 15px; opacity: 0.9; margin: 0 0 20px 0;">Click Start to begin
+                                    monitoring</p>
+                                <button id="start-session-btn" class="btn btn-success"
+                                    style="padding: 10px 32px; font-size: 15px;">
+                                    <i class='bx bx-play-circle'></i> Start Session
+                                </button>
+                            </div>
+                            {% endif %}
+                            {% elif request.args.get('processed') == 'true' %}
+                            <img id="video-stream" class="video-stream" src="{{ url_for('video_feed') }}"
+                                onerror="this.style.display='none'; document.getElementById('wait-msg').style.display='block';">
+
+                            <div id="wait-msg" class="overlay-msg" style="display:none;">
+                                <i class='bx bx-camera-off' style="font-size: 48px; margin-bottom: 15px;"></i>
+                                <h3>Feed Disconnected</h3>
+                                <p>Waiting for input source...</p>
+                            </div>
+                            {% else %}
+                            <div
+                                style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; background: #f1f5f9; color: #64748b;">
+                                <i class='bx bxs-cloud-upload'
+                                    style="font-size: 64px; margin-bottom: 12px; color: #cbd5e1;"></i>
+                                <h3 style="color: #475569; font-weight: 600;">Ready to Analyze</h3>
+                                <p style="font-size: 14px;">Select a file to begin detection</p>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if mode == 'live' and session_active %}
+                    <!-- End Session Button (only shown when session is active) -->
+                    <div class="card-body"
+                        style="border-top: 1px solid var(--border); background: #f8fafc; padding: 15px;">
+                        <button id="end-session-btn" class="btn btn-danger" style="width: 100%;">
+                            <i class='bx bx-stop-circle'></i> End Session
+                        </button>
+                    </div>
+                    {% endif %}
+
+                    {% if mode == 'recorded' %}
+                    <div class="card-body" style="border-top: 1px solid var(--border); background: #f8fafc;">
+                        <form action="/process_data" method="POST" enctype="multipart/form-data" class="flex-between">
+                            <div style="display: flex; gap: 10px; align-items: center; flex: 1;">
+                                <label for="file-upload" class="btn btn-outline">
+                                    <i class='bx bx-upload'></i> Select Media
+                                </label>
+                                <input type="file" name="file" id="file-upload" class="hidden" accept="video/*,image/*"
+                                    onchange="document.getElementById('file-name').textContent = this.files[0].name">
+                                <span id="file-name" class="text-muted text-sm">No file chosen</span>
+                            </div>
+                            <button type="submit" class="btn btn-primary">
+                                <i class='bx bx-play-circle'></i> Process
+                            </button>
+                        </form>
+                        <div style="margin-top: 15px; border-top: 1px dashed var(--border); padding-top: 15px;">
+                            <button onclick="window.location.href='/download_processed'" class="btn btn-outline"
+                                style="width: 100%;">
+                                <i class='bx bxs-download'></i> Download Annotated Result
+                            </button>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
+            <!-- Right Column: Logs & Controls -->
+            <div class="col-right" style="grid-column: 1 / -1;">
+
+                <!-- Controls Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Detection Sensitivity</span>
+                        <i class='bx bx-slider-alt text-muted'></i>
+                    </div>
+                    <div class="card-body">
+                        <!-- Invigilator Confidence -->
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                            <label class="text-sm font-semibold">Invigilator Accuracy</label>
+                            <span id="invig-val" class="badge badge-success">{{ (invigilator_threshold * 100)|int }}%</span>
+                        </div>
+                        <input type="range" id="invig-slider" min="0.5" max="1.0" step="0.05"
+                            value="{{ invigilator_threshold }}">
+
+                        <!-- Divider -->
+                        <div style="margin: 20px 0; border-bottom: 1px dashed var(--border);"></div>
+
+                        <!-- 2. Mobile Phone Confidence -->
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                            <label class="text-sm font-semibold">📱 Phone Detection</label>
+                            <span id="phone-val" class="badge badge-danger">{{ (confidence_threshold * 100)|int }}%</span>
+                        </div>
+                        <input type="range" id="phone-slider" min="30" max="90" step="5"
+                            value="{{ (confidence_threshold * 100)|int }}">
+                        <p class="text-muted text-sm" style="margin-top:4px; margin-bottom:0;">Lower = detects more phones but more false alarms</p>
+
+                        <!-- Divider -->
+                        <div style="margin: 20px 0; border-bottom: 1px dashed var(--border);"></div>
+
+                        <!-- 3. Peeking Sensitivity -->
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                            <label class="text-sm font-semibold">Peeking Threshold</label>
+                            <span id="peeking-val" class="badge badge-warning">{{ peeking_sensitivity }}</span>
+                        </div>
+                        <input type="range" id="peeking-slider" min="0.01" max="0.5" step="0.01"
+                            value="{{ peeking_sensitivity }}">
+
+                        <p class="text-muted text-sm mt-4">
+                            <strong>Note:</strong> Lower peeking threshold = Stricter (More Sensitive).
+                        </p>
+                    </div>
+                </div>
+
+                {% if mode == 'live' %}
+                <!-- Statistics Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">📊 Session Statistics</span>
+                    </div>
+                    <div class="card-body">
+                        <!-- Total bar -->
+                        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 16px 20px; border-radius: 8px; color: white; display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
+                            <div style="font-size: 14px; font-weight: 600; opacity: 0.9;">Total Violations</div>
+                            <div style="font-size: 28px; font-weight: bold;" id="total-violations">0</div>
+                        </div>
+
+                        <!-- Per-type stat cards -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+                            <div class="stat-mini-card stat-phone">
+                                <div class="stat-number" id="phone-count">0</div>
+                                <div class="stat-label">📱 Phone</div>
+                            </div>
+                            <div class="stat-mini-card stat-peeking">
+                                <div class="stat-number" id="peeking-count">0</div>
+                                <div class="stat-label">👁️ Signaling</div>
+                            </div>
+                            <div class="stat-mini-card stat-mutual">
+                                <div class="stat-number" id="mutual-count">0</div>
+                                <div class="stat-label">🔗 Mutual</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+
+                <!-- Logs Card -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-title">Violation Log</span>
+                        <button class="btn btn-outline" style="padding: 4px 8px;"
+                            onclick="window.location.href='/generate_report'">
+                            <i class='bx bxs-report'></i> PDF
+                        </button>
+                    </div>
+                    <div class="card-body" style="padding: 0; max-height: 400px; overflow-y: auto;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead style="background: #f8fafc; position: sticky; top: 0;">
+                                <tr>
+                                    <th
+                                        style="text-align: left; padding: 12px 16px; font-size: 11px; text-transform: uppercase;">
+                                        Time</th>
+                                    <th style="padding: 12px 16px; font-size: 11px; text-transform: uppercase;">Type
+                                    </th>
+                                    <th style="text-align: right; padding: 12px 16px;">Conf</th>
+                                </tr>
+                            </thead>
+                            <tbody id="violation-table">
+                                <!-- JS Populated -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% endif %}
+
+            </div>
+        </div>
+    </div>
+
+    <!-- Alert Banner — appears on violation detection -->
+    <div id="alert-banner" class="alert-banner"></div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="spinner"></div>
+        <h3 style="margin-bottom: 8px; font-weight: 500;">Processing Media</h3>
+        <p style="color: #94a3b8; font-size: 14px;">Analyzing frames for violations...</p>
+    </div>
+
+    <!-- Report Prompt Modal -->
+    <div id="report-modal"
+        style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10000; align-items: center; justify-content: center;">
+        <div
+            style="background: white; border-radius: 12px; padding: 30px; max-width: 450px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.3);">
+            <div style="text-align: center; margin-bottom: 25px;">
+                <i class='bx bx-check-circle' style="font-size: 64px; color: #10b981;"></i>
+                <h2 style="margin: 15px 0 10px; color: #1e293b;">Session Ended</h2>
+                <p id="modal-violation-count" style="color: #64748b; font-size: 16px;">0 violations detected</p>
+            </div>
+            <p style="color: #475569; margin-bottom: 25px; text-align: center;">Would you like to download the
+                monitoring report?</p>
+            <div style="display: flex; gap: 15px;">
+                <button id="modal-no-btn" class="btn btn-outline" style="flex: 1;">
+                    <i class='bx bx-x'></i> No, Thanks
+                </button>
+                <button id="modal-yes-btn" class="btn btn-primary" style="flex: 1;">
+                    <i class='bx bxs-download'></i> Download Report
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript Logic -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            // --- Check for Processed Flag ---
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('processed') === 'true') {
+                // Use a slight delay to ensure toast container is ready
+                setTimeout(() => showToast('File Processed & Annotations Saved', 'success'), 500);
+            }
+            // --- Toast Helper ---
+            function showToast(message, type = 'info') {
+                const container = document.getElementById('toast-container');
+                const toast = document.createElement('div');
+                toast.className = `toast ${type}`;
+
+                let icon = 'bx-info-circle';
+                if (type === 'success') icon = 'bx-check-circle';
+                if (type === 'error') icon = 'bx-x-circle';
+
+                toast.innerHTML = `
+                    <i class='bx ${icon} toast-icon'></i>
+                    <span style="font-weight: 500;">${message}</span>
+                `;
+
+                container.appendChild(toast);
+
+                // Remove after 3s
+                setTimeout(() => {
+                    toast.style.opacity = '0';
+                    setTimeout(() => toast.remove(), 300);
+                }, 3000);
+            }
+
+            // --- SESSION CONTROL LOGIC ---
+            const startBtn = document.getElementById('start-session-btn');
+            const endBtn = document.getElementById('end-session-btn');
+            const reportModal = document.getElementById('report-modal');
+            const modalYesBtn = document.getElementById('modal-yes-btn');
+            const modalNoBtn = document.getElementById('modal-no-btn');
+            const modalViolationCount = document.getElementById('modal-violation-count');
+
+            // Start Session
+            if (startBtn) {
+                startBtn.addEventListener('click', function () {
+                    fetch('/start_session', { method: 'POST' })
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.status === 'success') {
+                                showToast('Session Started - Monitoring Active', 'success');
+                                // Reload page to show active state
+                                setTimeout(() => location.reload(), 1000);
+                            } else {
+                                showToast('Failed to start session', 'error');
+                            }
+                        })
+                        .catch(e => showToast('Network Error', 'error'));
+                });
+            }
+
+            // End Session
+            if (endBtn) {
+                endBtn.addEventListener('click', function () {
+                    fetch('/end_session', { method: 'POST' })
+                        .then(res => res.json())
+                        .then(data => {
+                            if (data.status === 'success') {
+                                // Show modal with violation count
+                                modalViolationCount.textContent = `${data.violations} violation${data.violations !== 1 ? 's' : ''} detected`;
+                                reportModal.style.display = 'flex';
+                            } else {
+                                showToast('Failed to end session', 'error');
+                            }
+                        })
+                        .catch(e => showToast('Network Error', 'error'));
+                });
+            }
+
+            // Modal - Yes (Download Report)
+            if (modalYesBtn) {
+                modalYesBtn.addEventListener('click', function () {
+                    window.location.href = '/generate_report';
+                    reportModal.style.display = 'none';
+                    // Reload after short delay to reset state
+                    setTimeout(() => location.reload(), 2000);
+                });
+            }
+
+            // Modal - No (Just close)
+            if (modalNoBtn) {
+                modalNoBtn.addEventListener('click', function () {
+                    reportModal.style.display = 'none';
+                    // Reload to reset state
+                    location.reload();
+                });
+            }
+
+            // A. Invigilator Confidence
+            const invigSlider = document.getElementById('invig-slider');
+            const invigVal = document.getElementById('invig-val');
+
+            if (invigSlider) {
+                invigSlider.addEventListener('input', function () {
+                    invigVal.textContent = Math.round(this.value * 100) + "%";
+                });
+                invigSlider.addEventListener('change', function () {
+                    updateSettings({ invig_conf: this.value });
+                });
+            }
+
+            // B. Mobile Phone Confidence Threshold
+            const phoneSlider = document.getElementById('phone-slider');
+            const phoneVal = document.getElementById('phone-val');
+
+            if (phoneSlider) {
+                phoneSlider.addEventListener('input', function () {
+                    phoneVal.textContent = this.value + '%';
+                });
+                phoneSlider.addEventListener('change', function () {
+                    fetch('/set_phone_threshold', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ threshold: parseInt(this.value) / 100 })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === 'ok') {
+                            showToast('Phone threshold updated to ' + this.value + '%', 'success');
+                        } else {
+                            showToast('Failed to update phone threshold', 'error');
+                        }
+                    })
+                    .catch(e => showToast('Network Error', 'error'));
+                });
+            }
+
+            // C. Peeking Sensitivity
+            const peekSlider = document.getElementById('peeking-slider');
+            const peekVal = document.getElementById('peeking-val');
+
+            if (peekSlider) {
+                peekSlider.addEventListener('input', function () {
+                    peekVal.textContent = this.value;
+                });
+
+                peekSlider.addEventListener('change', function () {
+                    updateSettings({ peeking_sens: this.value });
+                });
+            }
+
+            // Helper to send updates
+            function updateSettings(payload) {
+                fetch('/update_settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            showToast('Settings Updated Successfully', 'success');
+                        } else {
+                            showToast('Failed to update settings', 'error');
+                        }
+                    })
+                    .catch(e => showToast('Network Error', 'error'));
+            }
+
+            // --- 2. LOG POLLING ---
+            const tableBody = document.getElementById('violation-table');
+            const connectionStatus = document.getElementById('connection-status');
+            const video = document.getElementById('video-stream');
+
+            if (video) {
+                video.onload = () => {
+                    connectionStatus.className = 'badge badge-success';
+                    connectionStatus.innerHTML = '<span class="status-dot active" style="margin-right: 6px;"></span> Signal Stable';
+                };
+
+                video.onerror = () => {
+                    connectionStatus.className = 'badge badge-danger';
+                    connectionStatus.innerHTML = '<span class="status-dot error" style="margin-right: 6px;"></span> Signal Lost';
+                    if (!window.signalLostToast) {
+                        showToast('Camera Signal Lost - Check Connection', 'error');
+                        window.signalLostToast = true;
+                    }
+                };
+            }
+
+            // --- 3. UPLOAD LOADING STATE ---
+            const uploadForm = document.querySelector('form[action="/process_data"]');
+            if (uploadForm) {
+                uploadForm.addEventListener('submit', function () {
+                    const fileInput = document.getElementById('file-upload');
+                    if (fileInput.files.length > 0) {
+                        document.getElementById('loading-overlay').classList.remove('hidden');
+                    } else {
+                        showToast('Please select a file first', 'error');
+                        event.preventDefault();
+                    }
+                });
+            }
+
+            // --- 4. AUDIO ALERT SYSTEM ---
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            let audioCtx = new AudioContext();
+
+            function playBeep() {
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume().then(() => console.log("Resumed"));
+                }
+                const oscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+
+                oscillator.type = 'sine';
+                oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime); // 1000Hz Alert
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+
+                oscillator.start();
+
+                // Beep length
+                gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.5);
+
+                oscillator.stop(audioCtx.currentTime + 0.5);
+            }
+
+            // Global unlock for audio on ANY click
+            document.addEventListener('click', function () {
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume().then(() => console.log("Audio unlocked!"));
+                }
+            });
+
+            let lastViolationCount = 0;
+            let lastAlertId = null;  // Track last alert to prevent duplicates
+
+            // --- FLASH ALERT SYSTEM ---
+            function flashAlert(message, type) {
+                const alertBanner = document.getElementById('alert-banner');
+                if (alertBanner) {
+                    alertBanner.textContent = message;
+                    alertBanner.className = `alert-banner alert-${type} show`;
+                    setTimeout(() => {
+                        alertBanner.classList.remove('show');
+                    }, 4000);
+                }
+            }
+
+            setInterval(() => {
+                if (!tableBody) return;
+                fetch('/get_logs')
+                    .then(res => res.json())
+                    .then(data => {
+                        let rows = '';
+                        if (data && data.length > 0) {
+
+                            // Check for NEW violations to trigger beep + flash
+                            if (data.length > lastViolationCount) {
+                                playBeep();
+
+                                // Flash alert for latest violation
+                                const latest = data[data.length - 1];
+                                const alertId = latest.time + '_' + latest.type;
+                                if (alertId !== lastAlertId) {
+                                    lastAlertId = alertId;
+                                    if (latest.type === 'Mobile Phone') {
+                                        flashAlert('🚨 MOBILE PHONE DETECTED!', 'danger');
+                                    } else if (latest.type === 'Mutual Signaling') {
+                                        flashAlert('🔗 MUTUAL SIGNALING DETECTED!', 'danger');
+                                    } else if (latest.alert_level === 'critical') {
+                                        flashAlert('⚠️ CRITICAL: SIGNALING DETECTED!', 'warning');
+                                    }
+                                }
+                            }
+                            lastViolationCount = data.length;
+
+                            data.forEach(log => {
+                                // Use badge_class and icon from backend if available
+                                let badgeClass = log.badge_class || 'badge-info';
+                                let iconEmoji = log.icon || '';
+
+                                rows += `
+                                    <tr style="border-bottom: 1px solid #f1f5f9;">
+                                        <td style="padding: 12px 16px; font-family: monospace;">${log.time}</td>
+                                        <td style="padding: 12px 16px;">
+                                            <span class="badge ${badgeClass}">
+                                                ${iconEmoji} ${log.type}
+                                            </span>
+                                        </td>
+                                        <td style="padding: 12px 16px; text-align: right;">${Math.round(log.conf * 100)}%</td>
+                                    </tr>
+                                `;
+                            });
+                        } else {
+                            rows = `
+                                <tr>
+                                    <td colspan="3" style="padding: 40px; text-align: center; color: #94a3b8;">
+                                        <i class='bx bx-check-shield' style="font-size: 32px; margin-bottom: 10px;"></i>
+                                        <p>No violations detected</p>
+                                    </td>
+                                </tr>
+                            `;
+                        }
+                        if (tableBody.innerHTML !== rows) tableBody.innerHTML = rows;
+                    })
+                    .catch(e => console.error("Polling error", e));
+            }, 1000);
+
+            // --- 5. STATISTICS POLLING ---
+            setInterval(() => {
+                fetch('/get_stats')
+                    .then(res => res.json())
+                    .then(data => {
+                        // Update total count
+                        const totalEl = document.getElementById('total-violations');
+                        if (totalEl) {
+                            totalEl.textContent = data.total_violations || data.total || 0;
+                        }
+
+                        // Update per-type stat cards
+                        const phoneEl = document.getElementById('phone-count');
+                        if (phoneEl) phoneEl.textContent = data.mobile_phone || 0;
+
+                        const peekEl = document.getElementById('peeking-count');
+                        if (peekEl) peekEl.textContent = data.peeking || 0;
+
+                        const mutualEl = document.getElementById('mutual-count');
+                        if (mutualEl) mutualEl.textContent = data.mutual_signaling || 0;
+                    })
+                    .catch(e => console.error("Stats polling error", e));
+            }, 2000); // Poll every 2 seconds
+        });
+    </script>
+</body>
+
+</html>
