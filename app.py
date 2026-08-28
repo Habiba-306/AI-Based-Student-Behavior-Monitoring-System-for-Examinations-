@@ -11,18 +11,31 @@ except ImportError:
 import json
 from functools import wraps
 from flask import Flask, render_template, Response, jsonify, request, redirect, url_for, send_file, session, flash
-from ultralytics import YOLO
 from datetime import datetime
 from threading import Thread, Lock
 from werkzeug.utils import secure_filename
 from werkzeug.security import check_password_hash
 from fpdf import FPDF
-import mediapipe as mp
 import numpy as np
 
+# --- LOCAL IMPORTS FOR MODULARITY ---
+from utils import (
+    calculate_iomin,
+    is_face_inside_invigilator,
+    match_face_to_track,
+    match_phone_to_track,
+    classify_gaze_direction,
+    find_mutual_gaze_pairs
+)
+from models import (
+    yolo_model as model,
+    face_mesh,
+    face_detection,
+    mediapipe_lock
+)
 
 app = Flask(__name__)
-app.secret_key = os.urandom(24)  # Secure random key
+app.secret_key = os.environ.get('EXAMGUARD_SECRET_KEY', 'examguard-fixed-dev-key-change-in-prod')
 
 # --- Configurations ---
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -31,8 +44,7 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['PROCESSED_FOLDER'], exist_ok=True)  # ITERATION 3
 os.makedirs('Reports', exist_ok=True)
 
-# Model Load karein
-model = YOLO('best.pt')
+# Model loaded from models.py
 current_source = None
 violations_log = []
 violations_lock = Lock()  # Thread-safe access to violations_log
@@ -51,8 +63,10 @@ frame_buffer = []
 frame_buffer_lock = Lock()
 FRAME_BUFFER_SIZE = 5
 
-# Per-face peeking cooldown tracker — maps cooldown_key -> {'last_capture': float}
+# Per-face peeking cooldown tracker — maps cooldown_key -> last_capture (float)
 _peek_cooldowns = {}
+_cooldown_lock = Lock()  # BUG #10 FIX: atomic check-then-set for cooldown
+_report_dir_lock = Lock()  # BUG #7 FIX: thread-safe session ID creation
 
 # Settings
 invigilator_threshold = 0.80  # High Accuracy Class
@@ -103,32 +117,7 @@ current_frame_number = 0 # Incremented each time run_async_detection() runs
 # breaking their glances into short bursts.
 student_suspicion = {}   # {face_id (int): suspicion state dict (see update_suspicion_state)}
 
-# --- MEDIAPIPE INITIALIZATION ---
-mediapipe_lock = Lock()
-mp_face_mesh = mp.solutions.face_mesh
-mp_face_detection = mp.solutions.face_detection
-
-# Face Detection: Finds all faces in frame (optimized for distance)
-face_detection = mp_face_detection.FaceDetection(
-    model_selection=1,  # 1 = full range model (better for distant faces)
-    min_detection_confidence=0.3  # Low threshold for classroom environments
-)
-
-# MULTI-STUDENT FIX: static_image_mode=True treats every frame
-# independently — no tracking continuity required between frames.
-# This is essential because our async thread skips frames, which
-# breaks MediaPipe's internal face tracker causing it to drop
-# all faces except the most prominent one.
-# min_detection_confidence=0.3 catches second/third faces that
-# are slightly less frontal. Combined with 1280px input resolution,
-# this does NOT increase false positives.
-face_mesh = mp.solutions.face_mesh.FaceMesh(
-    static_image_mode=True,
-    max_num_faces=10,
-    refine_landmarks=False,
-    min_detection_confidence=0.3,
-    min_tracking_confidence=0.3
-)
+# MediaPipe initialization moved to models.py
 
 
 def trigger_alert():
@@ -219,13 +208,12 @@ def release_camera():
 
 
 def get_report_dir():
-    """Returns folder specific to current session"""
+    """Returns folder specific to current session. Thread-safe (BUG #7 FIX)."""
     global current_session_id
-    if not current_session_id:
-        # Fallback or default
-        current_session_id = f"Session_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-
-    path = os.path.join('Reports', current_session_id)
+    with _report_dir_lock:
+        if not current_session_id:
+            current_session_id = f"Session_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+        path = os.path.join('Reports', current_session_id)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -401,17 +389,18 @@ def detect_peeking_mediapipe(frame):
             # --- STEP 6: Classification (Yaw Only) ---
             YAW_THRESHOLD = 22  # Lowered to 22 for instant bounding box appearance
             
-            if abs(yaw) > YAW_THRESHOLD:
-                # Confidence based on yaw severity
-                confidence = min(1.0, abs(yaw) / 90.0 * 1.5)
+            is_peeking = abs(yaw) > YAW_THRESHOLD
+            # Confidence based on yaw severity
+            confidence = min(1.0, abs(yaw) / 90.0 * 1.5) if is_peeking else 0.0
 
-                peeking_detections.append({
-                    'label': 'peeking',
-                    'display_label': 'Peeking',
-                    'conf': confidence,
-                    'box': [bx1, by1, bx2, by2],
-                    'yaw': yaw
-                })
+            peeking_detections.append({
+                'label': 'peeking' if is_peeking else 'face',
+                'display_label': 'Peeking' if is_peeking else 'Face',
+                'conf': confidence,
+                'box': [bx1, by1, bx2, by2],
+                'yaw': yaw,
+                'is_peeking': is_peeking
+            })
 
     # --- NMS: Remove Duplicate Detections ---
     peeking_detections.sort(
@@ -535,9 +524,12 @@ def save_evidence_smart(frame, label, box_coords, confidence=None,
     # --- MOBILE PHONE: instant critical, 20s cooldown ---
     if label == 'mobile_phone':
         cooldown_key = f"phone_box_{box_coords[0]}_{box_coords[1]}"
-        last_capture = _peek_cooldowns.get(cooldown_key, 0)
-        if now - last_capture < 20.0:
-            return None
+        # BUG #10 FIX: atomic check-then-set with _cooldown_lock
+        with _cooldown_lock:
+            last_capture = _peek_cooldowns.get(cooldown_key, 0)
+            if now - last_capture < 20.0:
+                return None
+            _peek_cooldowns[cooldown_key] = now  # Reserve slot immediately
 
         overlay_text = "VIOLATION: MOBILE PHONE"
         file_prefix = 'mobile_phone'
@@ -560,16 +552,18 @@ def save_evidence_smart(frame, label, box_coords, confidence=None,
         img_path = os.path.join(get_report_dir(), f"{file_prefix}_{int(now)}.jpg")
         cv2.imwrite(img_path, ev)
 
-        _peek_cooldowns[cooldown_key] = now
         print(f"📸 Evidence saved: {os.path.basename(img_path)} [mobile_phone] conf={confidence}")
         return img_path
 
     # --- PEEKING: existing logic below ---
     # Per-face cooldown check (15 seconds between screenshots for the same face)
     cooldown_key = f"peek_face_{face_id}" if face_id is not None else f"peek_box_{box_coords[0]}"
-    last_capture = _peek_cooldowns.get(cooldown_key, 0)
-    if now - last_capture < 15.0:
-        return None
+    # BUG #10 FIX: atomic check-then-set with _cooldown_lock
+    with _cooldown_lock:
+        last_capture = _peek_cooldowns.get(cooldown_key, 0)
+        if now - last_capture < 15.0:
+            return None
+        _peek_cooldowns[cooldown_key] = now  # Reserve slot immediately
 
     # Determine overlay text
     if 'directional' in alert_level:
@@ -601,7 +595,6 @@ def save_evidence_smart(frame, label, box_coords, confidence=None,
     img_path = os.path.join(get_report_dir(), f"{file_prefix}_{int(now)}.jpg")
     cv2.imwrite(img_path, ev)
 
-    _peek_cooldowns[cooldown_key] = now
     print(f"📸 Evidence saved: {os.path.basename(img_path)} [{alert_level}] face_id={face_id}")
     return img_path
 
@@ -629,9 +622,16 @@ def process_video(input_path, output_path):
         print(
             f"   📊 Video info: {width}x{height} @ {fps}fps, {total_frames} frames")
 
-        # Create video writer
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # BUG #8 FIX: avc1 (H.264) produces browser-compatible .mp4 files.
+        # mp4v (MPEG-4 Part 2) is rejected by Chrome/Firefox <video> tags.
+        fourcc = cv2.VideoWriter_fourcc(*'avc1')
         out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        if not out.isOpened():
+            # Fallback: some OpenCV builds lack avc1 — use XVID + .avi extension
+            output_path = output_path.rsplit('.', 1)[0] + '.avi'
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            print("   ⚠️ avc1 unavailable, falling back to XVID .avi")
 
         if not out.isOpened():
             print(f"❌ Failed to create output video: {output_path}")
@@ -687,6 +687,8 @@ def process_video(input_path, output_path):
             # --- MEDIAPIPE PEEKING CHECK (Recorded Video) ---
             peeking_results = detect_peeking_mediapipe(frame)
             for p_det in peeking_results:
+                if not p_det.get('is_peeking', False):
+                    continue
                 bx1, by1, bx2, by2 = p_det['box']
                 display_lbl = p_det['display_label']
                 color = (0, 0, 255)
@@ -789,6 +791,8 @@ def process_image(input_path, output_path):
         # --- MEDIAPIPE PEEKING CHECK (Processing Engine) ---
         peeking_results = detect_peeking_mediapipe(frame)
         for p_det in peeking_results:
+            if not p_det.get('is_peeking', False):
+                continue
             bx1, by1, bx2, by2 = p_det['box']
             display_lbl = p_det['display_label']
             color = (0, 0, 255)
@@ -909,124 +913,14 @@ def update_invigilator_ghosts(new_invigilator_boxes):
         invigilator_ghost_ttl.update(surviving_ttls)
 
 
-def calculate_iomin(box_a, box_b):
-    """
-    Calculates Intersection over Minimum Area (IoMin).
-
-    Unlike standard IoU (Intersection over Union), IoMin measures what
-    fraction of the SMALLER box is covered by the intersection.
-    This is critical when comparing a small face box against a large
-    invigilator body box — standard IoU would give near-zero values
-    even when the face is fully inside the body box.
-
-    Args:
-        box_a: [x1, y1, x2, y2] — first bounding box
-        box_b: [x1, y1, x2, y2] — second bounding box
-
-    Returns:
-        float in range [0.0, 1.0] — 1.0 means smaller box fully inside larger
-    """
-    # Calculate intersection rectangle
-    ix1 = max(box_a[0], box_b[0])
-    iy1 = max(box_a[1], box_b[1])
-    ix2 = min(box_a[2], box_b[2])
-    iy2 = min(box_a[3], box_b[3])
-
-    inter_area = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-    if inter_area == 0:
-        return 0.0
-
-    # Calculate individual areas (guard against zero-area degenerate boxes)
-    area_a = max(1, (box_a[2] - box_a[0]) * (box_a[3] - box_a[1]))
-    area_b = max(1, (box_b[2] - box_b[0]) * (box_b[3] - box_b[1]))
-
-    # Divide by the MINIMUM area — this answers: "how much of the smaller box
-    # is occupied by the intersection?" Perfect for face-inside-body detection.
-    return inter_area / min(area_a, area_b)
-
-
-def is_face_inside_invigilator(face_box, ghost_boxes, threshold=0.4):
-    """
-    Returns True if a detected peeking face belongs to the invigilator.
-
-    For each ghost box, we expand it by 15% margin (to handle slight
-    misalignment between YOLO's body detection and the face mesh box),
-    then calculate IoMin against the face box.
-
-    If IoMin > threshold (default 0.4 = 40% of the face is inside the
-    invigilator's expanded box), we conclude this face IS the invigilator
-    and suppress the peeking alarm.
-
-    Args:
-        face_box:     [x1, y1, x2, y2] — from MediaPipe FaceMesh
-        ghost_boxes:  List of [x1, y1, x2, y2] — invigilator ghost positions
-        threshold:    IoMin threshold for suppression decision (default 0.4)
-
-    Returns:
-        bool — True means "this is the invigilator's face, suppress alarm"
-    """
-    for ghost_box in ghost_boxes:
-        gx1, gy1, gx2, gy2 = int(ghost_box[0]), int(ghost_box[1]), \
-                               int(ghost_box[2]), int(ghost_box[3])
-
-        # Expand ghost box by 15% margin in all directions.
-        # Reason: YOLO body boxes often cut off the top of the head, so the
-        # face mesh bounding box (which includes forehead/hair) might extend
-        # slightly above/outside the raw YOLO box.
-        gw = gx2 - gx1
-        gh = gy2 - gy1
-        mx = int(gw * 0.15)  # 15% horizontal margin
-        my = int(gh * 0.15)  # 15% vertical margin
-        expanded_box = [gx1 - mx, gy1 - my, gx2 + mx, gy2 + my]
-
-        iomin = calculate_iomin(face_box, expanded_box)
-        if iomin > threshold:
-            return True  # Face is sufficiently inside the invigilator box
-
-    return False  # No ghost box matched — this is a student's face
+# Mathematical functions calculate_iomin and is_face_inside_invigilator extracted to utils.py
 
 
 # ==============================================================================
 # FACE TRACKER — MODEL A PHASE 2
 # ==============================================================================
 
-def match_face_to_track(new_box, iou_threshold=0.2):
-    """
-    Finds an existing face track that matches new_box using standard IoU.
-
-    We use standard IoU here (not IoMin) because both boxes being compared
-    are face-sized — they have roughly equal areas, so standard IoU is correct.
-
-    Args:
-        new_box: [x1, y1, x2, y2] — face box from current MediaPipe output
-        iou_threshold: Minimum IoU to consider same face (default 0.3)
-
-    Returns:
-        face_id (int) if a match is found, None if this is a new face
-    """
-    best_iou = 0.0
-    best_face_id = None
-
-    for face_id, track in face_tracks.items():
-        tb = track['box']  # Previous frame's box for this tracked face
-        # Standard IoU: intersection / union
-        ix1 = max(new_box[0], tb[0])
-        iy1 = max(new_box[1], tb[1])
-        ix2 = min(new_box[2], tb[2])
-        iy2 = min(new_box[3], tb[3])
-        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-        if inter == 0:
-            continue
-        area_new = max(1, (new_box[2]-new_box[0]) * (new_box[3]-new_box[1]))
-        area_tb  = max(1, (tb[2]-tb[0]) * (tb[3]-tb[1]))
-        iou = inter / (area_new + area_tb - inter)
-        if iou > best_iou:
-            best_iou = iou
-            best_face_id = face_id
-
-    if best_iou >= iou_threshold:
-        return best_face_id
-    return None  # No close enough match — treat as new face
+# match_face_to_track extracted to utils.py
 
 
 def update_face_tracks(detected_face_boxes):
@@ -1051,7 +945,7 @@ def update_face_tracks(detected_face_boxes):
     updated_ids = set()  # Tracks which face_ids were refreshed this frame
 
     for box in detected_face_boxes:
-        face_id = match_face_to_track(box)
+        face_id = match_face_to_track(box, face_tracks)
         if face_id is not None:
             # Existing face re-detected: update its position and reset lost counter
             face_tracks[face_id]['box'] = box
@@ -1095,7 +989,7 @@ def update_face_tracks(detected_face_boxes):
 # SUSPICION STATE MACHINE — MODEL A PHASE 2
 # ==============================================================================
 
-def update_suspicion_state(face_id, yaw, timestamp):
+def update_suspicion_state(face_id, yaw, timestamp, is_peeking=True):
     """
     Cumulative sideways-time tracker per face across a 30-second session window.
 
@@ -1150,7 +1044,8 @@ def update_suspicion_state(face_id, yaw, timestamp):
 
     # Step 1: Add current timestamp to sideways list
     # (This function is ONLY called when yaw > 30°, so every call = sideways frame)
-    state['sideways_timestamps'].append(timestamp)
+    if is_peeking:
+        state['sideways_timestamps'].append(timestamp)
 
     # Step 2: Prune timestamps outside the rolling window
     # Only keep timestamps from the last 5 seconds
@@ -1203,60 +1098,7 @@ def update_suspicion_state(face_id, yaw, timestamp):
 # MUTUAL GAZE DETECTION — MODEL A PHASE 3
 # ==============================================================================
 
-def classify_gaze_direction(face_box, yaw, frame_width):
-    """
-    Classify rough gaze direction based on yaw constraint.
-    'forward' if abs(yaw) < 25°
-    'left' if yaw < -25°
-    'right' if yaw > 25°
-    """
-    cx = (face_box[0] + face_box[2]) // 2
-    cy = (face_box[1] + face_box[3]) // 2
-    
-    looking = 'forward'
-    if yaw < -25:
-        looking = 'left'
-    elif yaw > 25:
-        looking = 'right'
-        
-    return {
-        'center_x': cx,
-        'center_y': cy,
-        'looking': looking,
-        'yaw': yaw
-    }
-
-
-def find_mutual_gaze_pairs(gaze_classifications):
-    """
-    Identifies if two students are looking at each other simultaneously.
-    """
-    pairs = []
-    rights = [g for g in gaze_classifications if g['looking'] == 'right']
-    lefts = [g for g in gaze_classifications if g['looking'] == 'left']
-    
-    for r in rights:
-        for l in lefts:
-            # Face A (looking right) must be physically to the left of Face B (looking left)
-            if r['center_x'] < l['center_x']:
-                h_dist = l['center_x'] - r['center_x']
-                v_dist = abs(r['center_y'] - l['center_y'])
-                
-                # Apply spatial constraints (prevent cross-room false positives)
-                if h_dist <= MUTUAL_GAZE_MAX_DISTANCE and v_dist <= MUTUAL_GAZE_MAX_VERTICAL:
-                    face_a_id = r['face_id']
-                    face_b_id = l['face_id']
-                    
-                    # Consistent primary key constraint: min_max ID sort
-                    fid1 = min(face_a_id, face_b_id)
-                    fid2 = max(face_a_id, face_b_id)
-                    
-                    pairs.append({
-                        'face_a_id': face_a_id,
-                        'face_b_id': face_b_id,
-                        'pair_key': f"{fid1}_{fid2}"
-                    })
-    return pairs
+# Gaze classification functions extracted to utils.py
 
 
 def update_mutual_gaze_sessions(current_pairs, timestamp):
@@ -1288,17 +1130,20 @@ def update_mutual_gaze_sessions(current_pairs, timestamp):
             if timestamp - session['last_seen'] > 2.0:
                 # Gaze broken for > 2 seconds, remove entirely
                 keys_to_remove.append(pk)
-        
-        # Determine duration alert
-        if session['duration'] >= 3.0 and not session['alert_fired']:
-            session['alert_fired'] = True
-            matching_pair = next((p for p in current_pairs if p['pair_key'] == pk), None)
-            if matching_pair:
-                alert_pairs.append(matching_pair)
+
+        # BUG #6 FIX: Only fire duration alert for ACTIVE sessions (pair still
+        # visible this frame). Stale sessions that are pending removal must NOT
+        # trigger alerts — the students are no longer looking at each other.
+        if pk in current_pair_keys:
+            if session['duration'] >= 3.0 and not session['alert_fired']:
+                session['alert_fired'] = True
+                matching_pair = next((p for p in current_pairs if p['pair_key'] == pk), None)
+                if matching_pair:
+                    alert_pairs.append(matching_pair)
 
     for pk in keys_to_remove:
         del mutual_gaze_sessions[pk]
-        
+
     return alert_pairs
 
 
@@ -1351,42 +1196,24 @@ def save_mutual_gaze_evidence(frame, face_a_box, face_b_box, duration):
     cv2.imwrite(img_path, evidence_frame)
     
     trigger_alert()
-    
-    violations_log.append({
-        "time": ts,
-        "type": "Mutual Signaling",
-        "conf": 1.0
-    })
-    
+
+    # BUG #2 FIX: violations_log must always be written under violations_lock
+    with violations_lock:
+        violations_log.append({
+            "time": ts,
+            "type": "Mutual Signaling",
+            "conf": 1.0
+        })
+
     print(f"📸 Evidence saved: {os.path.basename(img_path)} [Mutual Signaling]")
+
 
 
 # ==============================================================================
 # PHONE TRACKER — MULTI-PHONE STATE MACHINE
 # ==============================================================================
 
-def match_phone_to_track(new_box, iou_threshold=0.2):
-    best_iou = 0.0
-    best_phone_id = None
-    for phone_id, track in phone_tracks.items():
-        tb = track['box']
-        ix1 = max(new_box[0], tb[0])
-        iy1 = max(new_box[1], tb[1])
-        ix2 = min(new_box[2], tb[2])
-        iy2 = min(new_box[3], tb[3])
-        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-        if inter == 0:
-            continue
-        area_new = max(1, (new_box[2]-new_box[0]) * (new_box[3]-new_box[1]))
-        area_tb  = max(1, (tb[2]-tb[0]) * (tb[3]-tb[1]))
-        iou = inter / (area_new + area_tb - inter)
-        if iou > best_iou:
-            best_iou = iou
-            best_phone_id = phone_id
-
-    if best_iou >= iou_threshold:
-        return best_phone_id
-    return None
+# match_phone_to_track extracted to utils.py
 
 def update_phone_tracks(detected_phone_boxes):
     global phone_tracks, phone_id_counter
@@ -1395,7 +1222,7 @@ def update_phone_tracks(detected_phone_boxes):
     updated_ids = set()
     
     for box in detected_phone_boxes:
-        phone_id = match_phone_to_track(box)
+        phone_id = match_phone_to_track(box, phone_tracks)
         if phone_id is not None:
             phone_tracks[phone_id]['box'] = box
             phone_tracks[phone_id]['frames_lost'] = 0
@@ -1555,7 +1382,8 @@ def run_async_detection(frame_input, full_res_frame=None):
                       f"(IoMin, ghost_count={len(current_ghost_snapshot)})")
             else:
                 student_peeking.append(p_det)
-                current_frame_dets.append(p_det)
+                if p_det.get('is_peeking', False):
+                    current_frame_dets.append(p_det)
 
         with detection_lock:
             latest_detections = list(current_frame_dets)
@@ -1576,12 +1404,13 @@ def run_async_detection(frame_input, full_res_frame=None):
             box_key = tuple(p_det['box'])
             face_id = box_to_face_id.get(box_key)
             yaw     = p_det.get('yaw', 0)
+            is_peeking = p_det.get('is_peeking', False)
 
             # Run suspicion accumulator for this face
-            alert_level, total_time = update_suspicion_state(face_id, yaw, now)
+            alert_level, total_time = update_suspicion_state(face_id, yaw, now, is_peeking)
 
             # Save evidence only if alert warrants it (not 'clean')
-            if 'critical' in alert_level:
+            if 'critical' in alert_level and is_peeking:
                 evidence_path = save_evidence_smart(
                     frame_input, 'peeking', p_det['box'],
                     p_det['conf'],
@@ -1596,15 +1425,16 @@ def run_async_detection(frame_input, full_res_frame=None):
                     else:
                         log_type = 'Signaling Detected'
 
-                    violations_log.append({
-                        "time": datetime.now().strftime("%H:%M:%S"),
-                        "type": log_type,
-                        "conf": round(p_det['conf'], 2),
-                        "detection_score": round(p_det['conf'], 2),
-                        "alert_level": alert_level,
-                        "face_id": face_id,
-                        "total_sideways_time": total_time
-                    })
+                    with violations_lock:
+                        violations_log.append({
+                            "time": datetime.now().strftime("%H:%M:%S"),
+                            "type": log_type,
+                            "conf": round(p_det['conf'], 2),
+                            "detection_score": round(p_det['conf'], 2),
+                            "alert_level": alert_level,
+                            "face_id": face_id,
+                            "total_sideways_time": total_time
+                        })
                     global unique_face_ids_seen
                     if face_id is not None:
                         unique_face_ids_seen.add(face_id)
@@ -1617,6 +1447,8 @@ def run_async_detection(frame_input, full_res_frame=None):
         frame_width = frame_input.shape[1]
         gaze_classifications = []
         for p_det in student_peeking:
+            if not p_det.get('is_peeking', False):
+                continue
             face_box = p_det['box']
             yaw = p_det.get('yaw', 0)
             face_id = box_to_face_id.get(tuple(face_box))
@@ -1731,6 +1563,8 @@ def generate():
                 # --- MEDIAPIPE PEEKING CHECK (Image Preview) ---
                 peeking_results = detect_peeking_mediapipe(frame)
                 for p_det in peeking_results:
+                    if not p_det.get('is_peeking', False):
+                        continue
                     bx1, by1, bx2, by2 = p_det['box']
                     display_lbl = p_det['display_label']
                     color = (0, 0, 255)
@@ -1801,8 +1635,13 @@ def generate():
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret or frame is None:
-                print("⚠️ End of stream")
-                break
+                # Loop if it's a video file, otherwise break
+                if current_source != 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    continue
+                else:
+                    print("⚠️ End of stream")
+                    break
 
             # Store valid frame in rolling buffer for evidence saving
             # Stored BEFORE flip and resize so evidence images are full resolution
@@ -1866,20 +1705,22 @@ def generate():
             # We need scaling factors if frame is not 640px.
 
             fh, fw = frame.shape[:2]
-            # Calculate scale relative to the 640px base we used for detection
-            # If we didn't resize in async input, scale is 1. But we DID resize to max 640 width logic.
-            scale_x = fw / 640 if fw > 640 else 1.0
-            scale_y = fh / (640 * fh / fw) if fw > 640 else 1.0
-            # Simplified: just re-calculate based on width if we forced width
-            if fw > 640:
-                scale = fw / 640
-            else:
-                scale = 1.0
+
+            # BUG #3 + #5 FIX: YOLO runs on a 640px-wide frame; MediaPipe (peeking)
+            # runs on a 1280px-wide frame. Both sets of boxes land in latest_detections
+            # but need DIFFERENT scale factors when drawn onto the display frame.
+            # Using a single uniform scale was drawing peeking boxes at half size/position.
+            # Dead code (scale_x / scale_y) also removed.
+            yolo_scale   = fw / 640  if fw > 640  else 1.0   # for invigilator / mobile_phone
+            peek_scale   = fw / 1280 if fw > 1280 else 1.0   # for peeking (MediaPipe 1280px)
 
             for det in current_dets:
                 lbl = det['label']
                 conf = det['conf']
                 box = det['box']  # [x1, y1, x2, y2]
+
+                # BUG #3 FIX: choose correct scale per detection source
+                scale = peek_scale if lbl == 'peeking' else yolo_scale
 
                 # Scale Coordinates
                 x1 = int(box[0] * scale)
@@ -1982,13 +1823,9 @@ def handle_login():
         session['user'] = username
         session['role'] = users[username]['role']
 
-        # --- NEW SESSION INIT ---
-        global current_session_id, violations_log, active_violations
-        current_session_id = f"Session_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
-        violations_log = []
-        active_violations = {}
-        print(f"✅ New Session Started: {current_session_id}")
-
+        # BUG #9 FIX: Do NOT create session_id or reset violations_log here.
+        # That belongs in start_session() so the session timestamp reflects
+        # the actual exam start, not the login time.
         print(f"✅ User logged in: {username}")
         return redirect(url_for('selection'))
 
@@ -2499,14 +2336,19 @@ def generate_report():
         recommendation = "FORMAL UFM SUBMISSION RECOMMENDED - Multiple critical violations detected."
         rec_color = (180, 0, 0)
 
+    # BUG #4 FIX: take a locked snapshot before iterating — async thread may
+    # be appending to violations_log concurrently while report is being built.
+    with violations_lock:
+        violations_log_snapshot = list(violations_log)
+
     # Get first and last violation times from log
     critical_logs = [
-        log for log in violations_log
+        log for log in violations_log_snapshot
         if 'critical' in log.get('alert_level', '')
         or log.get('type') in ['Signaling Detected', 'Directional Signaling', 'Mutual Signaling', 'Mobile Phone']
     ]
     first_violation = critical_logs[0]['time'] if critical_logs else "N/A"
-    last_violation = critical_logs[-1]['time'] if critical_logs else "N/A"
+    last_violation  = critical_logs[-1]['time'] if critical_logs else "N/A"
 
     pdf = ExamReport()
     pdf.alias_nb_pages()

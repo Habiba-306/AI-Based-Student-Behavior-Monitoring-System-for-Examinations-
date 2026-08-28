@@ -1,41 +1,86 @@
-# Large data files
-*.csv
-*.json# Model weights - large files
+# ============================================================
+# ExamGuard — .gitignore
+# ============================================================
+
+# --- Security: Credentials & Sensitive Data ---
+users.json
+
+# --- Model Weights (Large Binary Files) ---
+# Host these on Google Drive / Hugging Face / GitHub Releases instead
 *.pt
 *.weights
 *.onnx
+*.h5
+*.pb
 
-# Python cache
+# --- Python Cache & Bytecode ---
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
 
-# Environment
+# --- Runtime-Generated Output Folders ---
+# These are created at runtime — keep the folders but not their contents
+Reports/*
+!Reports/.gitkeep
+uploads/*
+!uploads/.gitkeep
+processed_outputs/*
+!processed_outputs/.gitkeep
+
+# --- Environment & Secrets ---
 .env
+.env.*
+*.secret
+config.local.py
 
-# Logs aur evidence
-logs/
-evidence/
-*.xml
+# --- Data Files ---
+*.csv
 *.xlsx
-*.pdf
+*.xml
 
-# Images and media
+# --- Media / Evidence Files ---
 *.jpg
-*.png
 *.jpeg
+*.png
+*.gif
 *.mp4
 *.avi
 *.mov
 
-# Dataset folders
+# --- PDF Reports ---
+*.pdf
+
+# --- Dataset Folders ---
 /dataset/
 /data/
 /images/
 /videos/
 /models/
 
-# Python temporary files
+# --- Virtual Environments ---
+venv/
+.venv/
+env/
+ENV/
+
+# --- IDE & Editor Files ---
+.vscode/
+.idea/
+*.suo
+*.user
+
+# --- OS Junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Temporary Files ---
 tempCodeRunnerFile.py
 *.tmp
-__pycache__/
-*.pyc
+*.log
+
+# --- Logs ---
+logs/
+evidence/
