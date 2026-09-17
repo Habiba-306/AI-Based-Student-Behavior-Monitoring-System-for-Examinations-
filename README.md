@@ -1,5 +1,5 @@
 
-# 🛡️ ExamGuard — AI-Based Student Behavior Monitoring System for Examinations
+# 🛡️ AI-Based Student Behavior Monitoring System for Examinations
 
 Real-time examination proctoring and cheating detection using YOLOv8, MediaPipe 6-Point PnP Head-Pose Estimation, and Multi-State Tracking Machines.
 
