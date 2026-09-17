@@ -187,4 +187,3 @@ This project is developed for Final Year Project academic purposes. Feel free to
 - **Repository:** [AI-Based-Student-Behavior-Monitoring-System-for-Examinations-](https://github.com/Habiba-306/AI-Based-Student-Behavior-Monitoring-System-for-Examinations-)
 ```
 
-**Copy and paste this entire block into your `README.md` on GitHub.** It will render perfectly, with all tables, badges, code blocks, and emojis properly displayed. Let me know if you need any further adjustments! 🚀
